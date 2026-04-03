@@ -2,6 +2,7 @@ import { visit } from 'unist-util-visit'
 import { parse as parseYaml } from 'yaml'
 import type { Root } from 'mdast'
 import type { ContainerDirective } from 'mdast-util-directive'
+import type { VFile } from 'vfile'
 
 /**
  * Find the outermost {...} span on a line, handling nested braces.
@@ -21,10 +22,10 @@ function extractFlowAttrs(line: string): string | null {
 }
 
 /**
- * Strip YAML flow attrs from directive fence lines so remark-directive can
- * tokenize them cleanly. Returns:
- * - cleaned: the source with `{...}` removed from fence lines
- * - attrsByLine: 1-indexed line → parsed YAML attrs map
+ * Parse YAML flow attrs from all directive fence lines in a document.
+ * Returns:
+ * - cleaned: source with {yaml} blocks removed so remark-directive can tokenize cleanly
+ * - attrsByLine: 1-indexed line → parsed YAML attrs
  */
 function preprocessSource(doc: string): {
   cleaned: string
@@ -35,7 +36,6 @@ function preprocessSource(doc: string): {
 
   const cleaned = lines
     .map((line, i) => {
-      // Only act on directive fence lines (optional leading whitespace, then :::)
       if (!/^\s*:{3,}/.test(line)) return line
 
       const attrStr = extractFlowAttrs(line)
@@ -49,7 +49,6 @@ function preprocessSource(doc: string): {
           !Array.isArray(parsed)
         ) {
           attrsByLine.set(i + 1, parsed as Record<string, unknown>)
-          // Remove the {yaml} block from the line (remark-directive gets a clean fence)
           return line.replace(attrStr, '').trimEnd()
         }
       } catch {
@@ -66,42 +65,46 @@ function preprocessSource(doc: string): {
  * remark plugin: parse YAML flow attrs from `:::` directive fence lines and
  * merge them into containerDirective node attributes as properly-typed values.
  *
- * Must be used AFTER remark-parse and remark-directive in the pipeline:
+ * Recommended pipeline:
  *   unified().use(remarkParse).use(remarkDirective).use(remarkDirectiveYaml)
  */
 export function remarkDirectiveYaml(this: unknown) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const proc = this as any
 
-  // Wrap the parser set up by remark-parse so we can preprocess the source
-  // before micromark (and remark-directive's extension) tokenizes it.
-  // unified v11 uses `parser` (lowercase); `Parser` (uppercase) is deprecated.
-  const parserKey = 'parser' in proc && proc.parser ? 'parser' : 'Parser'
-  const OriginalParser = proc[parserKey] as
-    | ((...args: unknown[]) => Root)
-    | undefined
-
-  if (!OriginalParser) {
-    throw new Error(
-      'remarkDirectiveYaml: remark-parse must be used before this plugin'
-    )
-  }
-
-  // attrsByLine is written during parse and read during transform.
-  // Sequential processing is safe; concurrent calls to the same processor
-  // would need per-file state (not addressed in step 1).
+  // attrsByLine is populated during parsing and consumed during transform.
   let attrsByLine = new Map<number, Record<string, unknown>>()
 
-  proc[parserKey] = function (...args: unknown[]) {
-    const doc = args[0]
-    const { cleaned, attrsByLine: map } = preprocessSource(String(doc))
-    attrsByLine = map
-    args[0] = cleaned
-    return OriginalParser(...args)
+  // Wrap the parser so we can strip {yaml} attrs from fence lines before
+  // remark-directive's micromark tokenizer sees them. This is necessary
+  // because remark-directive doesn't handle YAML flow mapping syntax
+  // (colons as separators, commas between entries).
+  //
+  // In some environments (Astro MDX, custom processors) proc.parser may not
+  // be set at plugin-attach time. We skip the wrapping gracefully; the
+  // transformer fallback below reads attrs directly from the file instead.
+  const parserKey: 'parser' | 'Parser' | null =
+    proc.parser ? 'parser' : proc.Parser ? 'Parser' : null
+
+  if (parserKey) {
+    const OriginalParser = proc[parserKey] as (...args: unknown[]) => Root
+    proc[parserKey] = function (...args: unknown[]) {
+      const { cleaned, attrsByLine: map } = preprocessSource(String(args[0]))
+      attrsByLine = map
+      args[0] = cleaned
+      return OriginalParser(...args)
+    }
   }
 
-  // Transformer: apply the stored YAML attrs to containerDirective nodes.
-  return (tree: Root) => {
+  // Transformer: merge parsed YAML attrs into each containerDirective node.
+  return (tree: Root, file: VFile) => {
+    // Fallback for environments where parser wrapping didn't run:
+    // parse attrs from the raw file source here in the transformer.
+    if (attrsByLine.size === 0) {
+      const { attrsByLine: map } = preprocessSource(String(file))
+      attrsByLine = map
+    }
+
     visit(tree, 'containerDirective', (node: ContainerDirective) => {
       if (!node.position) return
       const attrs = attrsByLine.get(node.position.start.line)
@@ -113,5 +116,8 @@ export function remarkDirectiveYaml(this: unknown) {
         ...attrs,
       }
     })
+
+    // Reset so the same processor instance can be reused across files.
+    attrsByLine = new Map()
   }
 }

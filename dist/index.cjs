@@ -59,22 +59,22 @@ function preprocessSource(doc) {
 }
 function remarkDirectiveYaml() {
   const proc = this;
-  const parserKey = "parser" in proc && proc.parser ? "parser" : "Parser";
-  const OriginalParser = proc[parserKey];
-  if (!OriginalParser) {
-    throw new Error(
-      "remarkDirectiveYaml: remark-parse must be used before this plugin"
-    );
-  }
   let attrsByLine = /* @__PURE__ */ new Map();
-  proc[parserKey] = function(...args) {
-    const doc = args[0];
-    const { cleaned, attrsByLine: map } = preprocessSource(String(doc));
-    attrsByLine = map;
-    args[0] = cleaned;
-    return OriginalParser(...args);
-  };
-  return (tree) => {
+  const parserKey = proc.parser ? "parser" : proc.Parser ? "Parser" : null;
+  if (parserKey) {
+    const OriginalParser = proc[parserKey];
+    proc[parserKey] = function(...args) {
+      const { cleaned, attrsByLine: map } = preprocessSource(String(args[0]));
+      attrsByLine = map;
+      args[0] = cleaned;
+      return OriginalParser(...args);
+    };
+  }
+  return (tree, file) => {
+    if (attrsByLine.size === 0) {
+      const { attrsByLine: map } = preprocessSource(String(file));
+      attrsByLine = map;
+    }
     (0, import_unist_util_visit.visit)(tree, "containerDirective", (node) => {
       if (!node.position) return;
       const attrs = attrsByLine.get(node.position.start.line);
@@ -84,6 +84,7 @@ function remarkDirectiveYaml() {
         ...attrs
       };
     });
+    attrsByLine = /* @__PURE__ */ new Map();
   };
 }
 // Annotate the CommonJS export names for ESM import in node:
