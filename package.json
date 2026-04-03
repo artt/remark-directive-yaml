@@ -1,0 +1,37 @@
+{
+  "name": "remark-directive-yaml",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "mdast-util-directive": "^3.0.0",
+    "remark": "^15.0.1",
+    "remark-directive": "^3.0.0",
+    "unist-util-visit": "^5.0.0",
+    "yaml": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "remark-parse": "^11.0.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.3",
+    "unified": "^11.0.0",
+    "vfile": "^6.0.0",
+    "vitest": "^2.1.8"
+  }
+}
